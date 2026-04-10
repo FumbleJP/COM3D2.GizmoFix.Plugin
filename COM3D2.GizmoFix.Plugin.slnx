@@ -2,5 +2,5 @@
   <Folder Name="/ソリューション項目/">
     <File Path="LICENCE" />
   </Folder>
-  <Project Path="COM3D2.GizmoFix.Plugin/COM3D2.GizmoFix.Plugin.csproj" />
+  <Project Path="COM3D2.GizmoFix.Plugin/COM3D2.GizmoFix.Plugin.csproj" Id="e804d03d-0b39-473a-bbc5-e168ce80470d" />
 </Solution>

@@ -38,7 +38,7 @@ namespace COM3D2.GizmoFix.Plugin
 		/// <summary>
 		/// プラグインバージョン
 		/// </summary>
-		public const string PluginVersion = "0.4.4.0";
+		public const string PluginVersion = "0.5.5.0";
 
 		/// <summary>
 		/// HarmonyLib(HarmonyX)のインスタンス
@@ -121,6 +121,7 @@ namespace COM3D2.GizmoFix.Plugin
 
 			_harmony.PatchAll(typeof(Patch_GizmoRender_RenderGizmos));
 			_harmony.PatchAll(typeof(Patch_GizmoRender_Awake));
+			_harmony.PatchAll(typeof(Patch_GizmoRender_OnRenderObject));
 
 			Patch_GizmoRender_RenderGizmos._hoverColor = this._hoverColor;
 			Patch_GizmoRender_RenderGizmos._dragColor = this._dragColor;
@@ -137,7 +138,7 @@ namespace COM3D2.GizmoFix.Plugin
 
 		public void Update()
 		{
-			Patch_GizmoRender_RenderGizmos._hoverActive = false;
+			Patch_GizmoRender_RenderGizmos._hoverActive = null;
 		}
 
 		/// <summary>
@@ -301,7 +302,7 @@ namespace COM3D2.GizmoFix.Plugin
 			/// <summary>
 			/// いずれかのGizmoRenderがホバー中
 			/// </summary>
-			internal static bool _hoverActive;
+			internal static GizmoRender _hoverActive;
 
 			/// <summary>
 			/// ホバー中の軸 (-1=なし, 0=X, 1=Y, 2=Z)
@@ -321,6 +322,7 @@ namespace COM3D2.GizmoFix.Plugin
 			{
 				var half = AccessTools.Method(typeof(GizmoRender), "DrawCircleHalf");
 				var full = AccessTools.Method(typeof(Patch_GizmoRender_RenderGizmos), "DrawCircle");
+				var tanMethod = AccessTools.Method(typeof(Mathf), "Tan", new Type[] { typeof(float) });
 				var callCount = 0;
 				foreach (var inst in instructions)
 				{
@@ -331,11 +333,27 @@ namespace COM3D2.GizmoFix.Plugin
 					}
 					else
 					{
-						yield return inst;
+						if (inst.opcode == OpCodes.Call && inst.operand as MethodBase == tanMethod)
+						{
+							// -2 * Tan(0.5*fov*(-Deg2Rad)) = 2 * Tan(fov/2_rad) > 0
+							yield return new CodeInstruction(OpCodes.Ldc_R4, -Mathf.Deg2Rad);
+							yield return new CodeInstruction(OpCodes.Mul);
+							yield return inst;
+						}
+						else if (inst.opcode == OpCodes.Ldc_R4
+								 && inst.operand is float
+								 && Mathf.Approximately((float)inst.operand, 50f))
+						{
+							// /50f → /5f: FOV60°での元サイズを維持しつつFOV変化に正しく追従
+							yield return new CodeInstruction(OpCodes.Ldc_R4, 5f);
+						}
+						else
+						{
+							yield return inst;
+						}
 					}
 				}
 			}
-
 			/// <summary>
 			/// OnRenderObjectと同じ優先順位(RY→RZ→RX)でホバー軸を1つ確定する
 			/// </summary>
@@ -352,17 +370,18 @@ namespace COM3D2.GizmoFix.Plugin
 					|| !__instance.Visible || !__instance.eRotate || !GizmoRender.UIVisible)
 					return;
 
-				Camera cam = Camera.main;
+				var cam = Camera.main;
 				if (cam == null) return;
 
-				Ray ray = cam.ScreenPointToRay(Input.mousePosition);
+				var ray = cam.ScreenPointToRay(Input.mousePosition);
 
 				// RenderGizmosと同じ式でgeneralLensを計算
 				var mag = (cam.transform.position - __instance.transform.position).magnitude;
-				var gl = -2f * Mathf.Tan(0.5f * cam.fieldOfView) * mag / 50f * __instance.offsetScale;
+				// ホバー判定は競合プラグインのドラッグ判定と同じ正しい式を使用
+				var gl = 2f * Mathf.Tan(0.5f * cam.fieldOfView * Mathf.Deg2Rad) * mag / 5f * __instance.offsetScale;
 
 				// rotationMatrix = TRS(pos, rot, (1,1,1)) の逆行列
-				Matrix4x4 rotInv = Matrix4x4.TRS(
+				var rotInv = Matrix4x4.TRS(
 					__instance.transform.position,
 					__instance.transform.rotation,
 					Vector3.one).inverse;
@@ -375,7 +394,7 @@ namespace COM3D2.GizmoFix.Plugin
 					float enter;
 					if (new Plane(__instance.transform.up, __instance.transform.position).Raycast(ray, out enter))
 					{
-						Vector3 p = rotInv.MultiplyPoint(ray.GetPoint(enter));
+						var p = rotInv.MultiplyPoint(ray.GetPoint(enter));
 						var r = Mathf.Sqrt(p.x * p.x + p.z * p.z);
 						if (r > (1f - thick) * gl && r < (1f + thick) * gl) { _hoveredAxis = 1; return; }
 					}
@@ -387,7 +406,7 @@ namespace COM3D2.GizmoFix.Plugin
 					float enter;
 					if (new Plane(__instance.transform.forward, __instance.transform.position).Raycast(ray, out enter))
 					{
-						Vector3 p = rotInv.MultiplyPoint(ray.GetPoint(enter));
+						var p = rotInv.MultiplyPoint(ray.GetPoint(enter));
 						var r = Mathf.Sqrt(p.x * p.x + p.y * p.y);
 						if (r > (1f - thick) * gl && r < (1f + thick) * gl) { _hoveredAxis = 2; return; }
 					}
@@ -399,7 +418,7 @@ namespace COM3D2.GizmoFix.Plugin
 					float enter;
 					if (new Plane(__instance.transform.right, __instance.transform.position).Raycast(ray, out enter))
 					{
-						Vector3 p = rotInv.MultiplyPoint(ray.GetPoint(enter));
+						var p = rotInv.MultiplyPoint(ray.GetPoint(enter));
 						var r = Mathf.Sqrt(p.z * p.z + p.y * p.y);
 						if (r > (1f - thick) * gl && r < (1f + thick) * gl) { _hoveredAxis = 0; return; }
 					}
@@ -436,11 +455,11 @@ namespace COM3D2.GizmoFix.Plugin
 					drawColor = col;
 					opacity = _lineOpacityInactive.Value;
 				}
-				else if (_hoveredAxis == axisIndex && !_hoverActive)
+				else if (_hoveredAxis == axisIndex && (_hoverActive == null || _hoverActive == gizmoRender))
 				{
 					// ホバー中
-					_hoverActive = true;
 					drawColor = _hoverColor.Value;
+					_hoverActive = gizmoRender;
 				}
 				else
 				{
@@ -456,8 +475,8 @@ namespace COM3D2.GizmoFix.Plugin
 				var halfWidthBack = radius * _lineWidthBack.Value;   // 線の半幅（radius比で調整）
 
 				// カメラ位置をgizmoローカル空間へ（matScal=1前提）
-				Camera cam = Camera.main;
-				Vector3 camLocal = cam != null
+				var cam = Camera.main;
+				var camLocal = cam != null
 					? Quaternion.Inverse(gizmoRender.transform.rotation)
 					  * (cam.transform.position - gizmoRender.transform.position)
 					: Vector3.back * 1000f;
@@ -468,13 +487,13 @@ namespace COM3D2.GizmoFix.Plugin
 					var a0 = (float)Math.PI / 50f * index;
 					var a1 = (float)Math.PI / 50f * (index + 1);
 
-					Vector3 A = vtxLocal * Mathf.Cos(a0) + vtyLocal * Mathf.Sin(a0);
-					Vector3 B = vtxLocal * Mathf.Cos(a1) + vtyLocal * Mathf.Sin(a1);
+					var A = vtxLocal * Mathf.Cos(a0) + vtyLocal * Mathf.Sin(a0);
+					var B = vtxLocal * Mathf.Cos(a1) + vtyLocal * Mathf.Sin(a1);
 
 					// 線分方向とカメラ方向の外積 → 線に垂直でカメラに向く方向
-					Vector3 lineDir = (B - A).normalized;
-					Vector3 viewDir = (camLocal - (A + B) * 0.5f).normalized;
-					Vector3 perp = Vector3.Cross(lineDir, viewDir).normalized * (index < 50 ? halfWidthFront : halfWidthBack);
+					var lineDir = (B - A).normalized;
+					var viewDir = (camLocal - (A + B) * 0.5f).normalized;
+					var perp = Vector3.Cross(lineDir, viewDir).normalized * (index < 50 ? halfWidthFront : halfWidthBack);
 
 					GL.Color(index < 50 ? drawColorFront : drawColorBack);
 
@@ -505,7 +524,35 @@ namespace COM3D2.GizmoFix.Plugin
 			[HarmonyPostfix]
 			public static void Postfix(GizmoRender __instance)
 			{
-				__instance.lineRSelectedThick = 0.1f;
+				__instance.lineRSelectedThick = 0.2f;
+			}
+		}
+
+		/// <summary>
+		/// GizmoRender.OnRenderObjectパッチ
+		/// ドラッグ判定前にgeneralLensをFOVラジアン補正式で再計算する
+		/// </summary>
+		[HarmonyPatch(typeof(GizmoRender), "OnRenderObject")]
+		public static class Patch_GizmoRender_OnRenderObject
+		{
+			private static readonly FieldInfo _generalLens = AccessTools.Field(typeof(GizmoRender), "generalLens");
+
+			[HarmonyPrefix]
+			public static void Prefix(GizmoRender __instance)
+			{
+				if (!__instance.Visible || !__instance.eRotate)
+					return;
+
+				var cam = Camera.main;
+				if (cam == null)
+					return;
+
+				var mag = (cam.transform.position - __instance.transform.position).magnitude;
+				// ドラッグ判定用: FOVを正しくラジアン変換して generalLens を補正
+				var correctedLens = 2f * Mathf.Tan(0.5f * cam.fieldOfView * Mathf.Deg2Rad)
+					* mag / 5f * __instance.offsetScale;
+				_generalLens.SetValue(__instance, correctedLens);
+				// ※ RenderGizmos() が後で元の式で再計算するため描画サイズは変わらない
 			}
 		}
 
@@ -541,7 +588,7 @@ namespace COM3D2.GizmoFix.Plugin
 				if (_parentObj.GetValue(__instance) != null)
 					return;
 
-				Camera camera = Camera.main;
+				var camera = Camera.main;
 				if (camera == null)
 					return;
 
